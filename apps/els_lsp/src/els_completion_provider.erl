@@ -970,6 +970,7 @@ keywords(_POIKind, arity_only) ->
     [];
 keywords(_POIKind, _ItemFormat) ->
     Keywords = [
+        'maybe',
         'after',
         'and',
         'andalso',

@@ -749,7 +749,8 @@ diagnostics_options_bare() ->
         include_options(),
         [
             return_warnings,
-            return_errors
+            return_errors,
+            {feature, maybe_expr, enable}
         ]
     ]).
 
