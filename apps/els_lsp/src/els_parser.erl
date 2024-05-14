@@ -18,10 +18,6 @@
     parse_text/1
 ]).
 
--export_type([args/0]).
-
--type args() :: [els_arg:arg()].
-
 %%==============================================================================
 %% Includes
 %%==============================================================================
@@ -272,12 +268,27 @@ do_points_of_interest(Tree) ->
                 type_application(Tree);
             record_type ->
                 record_type(Tree);
-            _ ->
+            Type when
+                Type == block_expr;
+                Type == case_expr;
+                Type == if_expr;
+                Type == implicit_fun;
+                Type == maybe_expr;
+                Type == receive_expr;
+                Type == try_expr
+            ->
+                keyword_expr(Type, Tree);
+            _Other ->
                 []
         end
     catch
         throw:syntax_error -> []
     end.
+
+-spec keyword_expr(atom(), tree()) -> [els_poi:poi()].
+keyword_expr(Type, Tree) ->
+    Pos = erl_syntax:get_pos(Tree),
+    [poi(Pos, keyword_expr, Type)].
 
 -spec application(tree()) -> [els_poi:poi()].
 application(Tree) ->
@@ -550,16 +561,20 @@ attribute(Tree) ->
             []
     end.
 
--spec get_spec_args(tree()) -> args().
+-spec get_spec_args(tree()) -> els_arg:args().
 get_spec_args(Tree) ->
     %% Just fetching from the first spec clause for simplicity
     [SpecArg | _] = erl_syntax:list_elements(Tree),
-    case erl_syntax:type(SpecArg) of
+    do_get_spec_args(SpecArg).
+
+-spec do_get_spec_args(tree()) -> els_arg:args().
+do_get_spec_args(Tree) ->
+    case erl_syntax:type(Tree) of
         constrained_function_type ->
-            %% too complicated to handle now
-            [];
+            Body = erl_syntax:constrained_function_type_body(Tree),
+            do_get_spec_args(Body);
         function_type ->
-            TypeArgs = erl_syntax:function_type_arguments(SpecArg),
+            TypeArgs = erl_syntax:function_type_arguments(Tree),
             args_from_subtrees(TypeArgs);
         _OtherType ->
             []
@@ -721,7 +736,7 @@ function(Tree) ->
     ]).
 
 -spec analyze_function(tree(), [tree()]) ->
-    {atom(), arity(), args()}.
+    {atom(), arity(), els_arg:args()}.
 analyze_function(FunName, Clauses0) ->
     F =
         case is_atom_node(FunName) of
@@ -750,14 +765,14 @@ analyze_function(FunName, Clauses0) ->
             {F, Arity, Args}
     end.
 
--spec function_args(tree()) -> {arity(), args()}.
+-spec function_args(tree()) -> {arity(), els_arg:args()}.
 function_args(Clause) ->
     Patterns = erl_syntax:clause_patterns(Clause),
     Arity = length(Patterns),
     Args = args_from_subtrees(Patterns),
     {Arity, Args}.
 
--spec args_from_subtrees([tree()]) -> args().
+-spec args_from_subtrees([tree()]) -> els_arg:args().
 args_from_subtrees(Trees) ->
     Arity = length(Trees),
     [
@@ -769,7 +784,8 @@ args_from_subtrees(Trees) ->
      || {N, T} <- lists:zip(lists:seq(1, Arity), Trees)
     ].
 
--spec extract_variable(tree()) -> string() | undefined.
+-spec extract_variable(tree()) ->
+    string() | undefined | {type, string() | undefined}.
 extract_variable(T) ->
     case erl_syntax:type(T) of
         %% TODO: Handle literals
@@ -786,14 +802,7 @@ extract_variable(T) ->
             end;
         record_expr ->
             RecordNode = erl_syntax:record_expr_type(T),
-            case erl_syntax:type(RecordNode) of
-                atom ->
-                    NameAtom = erl_syntax:atom_value(RecordNode),
-                    NameBin = els_utils:camel_case(atom_to_binary(NameAtom, utf8)),
-                    unicode:characters_to_list(NameBin);
-                _ ->
-                    undefined
-            end;
+            atom_to_name(RecordNode);
         annotated_type ->
             TypeName = erl_syntax:annotated_type_name(T),
             case erl_syntax:type(TypeName) of
@@ -802,7 +811,55 @@ extract_variable(T) ->
                 _ ->
                     undefined
             end;
-        _Type ->
+        type_application ->
+            TypeName = erl_syntax:type_application_name(T),
+            case erl_syntax:type(TypeName) of
+                atom ->
+                    {type, atom_to_name(TypeName)};
+                module_qualifier ->
+                    Fun = erl_syntax:module_qualifier_body(TypeName),
+                    {type, atom_to_name(Fun)};
+                _ ->
+                    undefined
+            end;
+        user_type_application ->
+            TypeName = erl_syntax:user_type_application_name(T),
+            {type, atom_to_name(TypeName)};
+        list ->
+            try erl_syntax:list_elements(T) of
+                [H | _] ->
+                    case extract_variable(H) of
+                        undefined ->
+                            undefined;
+                        {type, Name} when is_list(Name) ->
+                            {type, Name ++ "s"};
+                        Name when is_list(Name) ->
+                            Name ++ "s";
+                        Name ->
+                            Name
+                    end;
+                _ ->
+                    undefined
+            catch
+                error:_ ->
+                    undefined
+            end;
+        record_type ->
+            TypeName = erl_syntax:record_type_name(T),
+            {type, atom_to_name(TypeName)};
+        Type ->
+            ?LOG_DEBUG("Unknown type: ~p", [Type]),
+            undefined
+    end.
+
+-spec atom_to_name(tree()) -> string() | undefined.
+atom_to_name(T) ->
+    case erl_syntax:type(T) of
+        atom ->
+            NameAtom = erl_syntax:atom_value(T),
+            NameBin = els_utils:camel_case(atom_to_binary(NameAtom, utf8)),
+            unicode:characters_to_list(NameBin);
+        _ ->
             undefined
     end.
 
@@ -816,9 +873,36 @@ implicit_fun(Tree) ->
             throw:syntax_error ->
                 undefined
         end,
+
     case FunSpec of
         undefined ->
-            [];
+            NameTree = erl_syntax:implicit_fun_name(Tree),
+            case try_analyze_implicit_fun(Tree) of
+                {{ModType, Mod}, {FunType, Function}, Arity} ->
+                    ModTree = erl_syntax:module_qualifier_argument(NameTree),
+                    FunTree = erl_syntax:arity_qualifier_body(
+                        erl_syntax:module_qualifier_body(NameTree)
+                    ),
+                    Data = #{
+                        name_range => els_range:range(erl_syntax:get_pos(FunTree)),
+                        mod_range => els_range:range(erl_syntax:get_pos(ModTree)),
+                        mod_is_variable => ModType =:= variable,
+                        fun_is_variable => FunType =:= variable
+                    },
+                    [poi(erl_syntax:get_pos(Tree), implicit_fun, {Mod, Function, Arity}, Data)];
+                {Function, Arity} ->
+                    ModTree = erl_syntax:module_qualifier_argument(NameTree),
+                    FunTree = erl_syntax:arity_qualifier_body(
+                        erl_syntax:module_qualifier_body(NameTree)
+                    ),
+                    Data = #{
+                        name_range => els_range:range(erl_syntax:get_pos(FunTree)),
+                        mod_range => els_range:range(erl_syntax:get_pos(ModTree))
+                    },
+                    [poi(erl_syntax:get_pos(Tree), implicit_fun, {Function, Arity}, Data)];
+                _ ->
+                    []
+            end;
         _ ->
             NameTree = erl_syntax:implicit_fun_name(Tree),
             Data =
@@ -837,6 +921,44 @@ implicit_fun(Tree) ->
                         #{name_range => els_range:range(erl_syntax:get_pos(FunTree))}
                 end,
             [poi(erl_syntax:get_pos(Tree), implicit_fun, FunSpec, Data)]
+    end.
+
+-spec try_analyze_implicit_fun(tree()) ->
+    {{atom(), atom()}, {atom(), atom()}, arity()}
+    | {atom(), arity()}
+    | undefined.
+try_analyze_implicit_fun(Tree) ->
+    FunName = erl_syntax:implicit_fun_name(Tree),
+    ModQBody = erl_syntax:module_qualifier_body(FunName),
+    ModQArg = erl_syntax:module_qualifier_argument(FunName),
+    case erl_syntax:type(ModQBody) of
+        arity_qualifier ->
+            AqBody = erl_syntax:arity_qualifier_body(ModQBody),
+            AqArg = erl_syntax:arity_qualifier_argument(ModQBody),
+            case {erl_syntax:type(ModQArg), erl_syntax:type(AqBody), erl_syntax:type(AqArg)} of
+                {macro, atom, integer} ->
+                    M = erl_syntax:variable_name(erl_syntax:macro_name(ModQArg)),
+                    F = erl_syntax:atom_value(AqBody),
+                    A = erl_syntax:integer_value(AqArg),
+                    case M of
+                        'MODULE' ->
+                            {F, A};
+                        _ ->
+                            undefined
+                    end;
+                {ModType, FunType, integer} when
+                    ModType =:= variable orelse ModType =:= atom,
+                    FunType =:= variable orelse FunType =:= atom
+                ->
+                    M = node_name(ModQArg),
+                    F = node_name(AqBody),
+                    A = erl_syntax:integer_value(AqArg),
+                    {{ModType, M}, {FunType, F}, A};
+                _Types ->
+                    undefined
+            end;
+        _Type ->
+            undefined
     end.
 
 -spec macro(tree()) -> [els_poi:poi()].
@@ -1103,7 +1225,7 @@ define_name(Tree) ->
             '_'
     end.
 
--spec define_args(tree()) -> none | args().
+-spec define_args(tree()) -> none | els_arg:args().
 define_args(Define) ->
     case erl_syntax:type(Define) of
         application ->

@@ -13,6 +13,8 @@
 %%==============================================================================
 -spec handle_request(any()) -> {response, any()}.
 handle_request({document_codeaction, Params}) ->
+    %% TODO: Make code actions run async?
+    %% TODO: Extract document here
     #{
         <<"textDocument">> := #{<<"uri">> := Uri},
         <<"range">> := RangeLSP,
@@ -30,7 +32,8 @@ handle_request({document_codeaction, Params}) ->
 code_actions(Uri, Range, #{<<"diagnostics">> := Diagnostics}) ->
     lists:usort(
         lists:flatten([make_code_actions(Uri, D) || D <- Diagnostics]) ++
-            wrangler_handler:get_code_actions(Uri, Range)
+            wrangler_handler:get_code_actions(Uri, Range) ++
+            els_code_actions:extract_function(Uri, Range)
     ).
 
 -spec make_code_actions(uri(), map()) -> [map()].
@@ -44,6 +47,11 @@ make_code_actions(
             {"function (.*) is unused", fun els_code_actions:export_function/4},
             {"variable '(.*)' is unused", fun els_code_actions:ignore_variable/4},
             {"variable '(.*)' is unbound", fun els_code_actions:suggest_variable/4},
+            {"undefined macro '(.*)'", fun els_code_actions:add_include_lib_macro/4},
+            {"undefined macro '(.*)'", fun els_code_actions:define_macro/4},
+            {"undefined macro '(.*)'", fun els_code_actions:suggest_macro/4},
+            {"record (.*) undefined", fun els_code_actions:add_include_lib_record/4},
+            {"record (.*) undefined", fun els_code_actions:define_record/4},
             {"Module name '(.*)' does not match file name '(.*)'",
                 fun els_code_actions:fix_module_name/4},
             {"Unused macro: (.*)", fun els_code_actions:remove_macro/4},

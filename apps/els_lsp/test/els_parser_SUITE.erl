@@ -39,7 +39,9 @@
     unicode_clause_pattern/1,
     latin1_source_code/1,
     record_comment/1,
-    pragma_noformat/1
+    pragma_noformat/1,
+    implicit_fun/1,
+    spec_args/1
 ]).
 
 %%==============================================================================
@@ -539,10 +541,72 @@ pragma_noformat(_Config) ->
     ?assertMatch({ok, _}, els_parser:parse(Text)),
     ?assertMatch({ok, _}, els_parser:parse_text(Text)).
 
+implicit_fun(_Config) ->
+    ?assertMatch(
+        [#{id := {foo, 0}}],
+        parse_find_pois(<<"fun foo/0">>, implicit_fun)
+    ),
+    ?assertMatch(
+        [#{id := {foo, foo, 0}}],
+        parse_find_pois(<<"fun foo:foo/0">>, implicit_fun)
+    ),
+    ?assertMatch(
+        [#{id := {'Var', foo, 0}, data := #{mod_is_variable := true}}],
+        parse_find_pois(<<"fun Var:foo/0">>, implicit_fun)
+    ),
+    ?assertMatch(
+        [#{id := {foo, 'Var', 0}, data := #{fun_is_variable := true}}],
+        parse_find_pois(<<"fun foo:Var/0">>, implicit_fun)
+    ),
+    ?assertMatch(
+        [#{id := {foo, 0}}],
+        parse_find_pois(<<"fun ?MODULE:foo/0">>, implicit_fun)
+    ),
+    ok.
+
+-spec spec_args(config()) -> ok.
+spec_args(_Config) ->
+    ?assertMatch(
+        [#{id := {f, 1}, data := #{args := [#{name := "Foo"}]}}],
+        parse_find_pois("-spec f(Foo :: any()) -> any()).", spec)
+    ),
+    ?assertMatch(
+        [#{id := {f, 1}, data := #{args := [#{name := "Foo"}]}}],
+        parse_find_pois("-spec f(Foo) -> any() when Foo :: any().", spec)
+    ),
+    ?assertMatch(
+        [#{id := {f, 1}, data := #{args := [#{name := {type, "Any"}}]}}],
+        parse_find_pois("-spec f(any()) -> any().", spec)
+    ),
+    ?assertMatch(
+        [#{id := {f, 1}, data := #{args := [#{name := {type, "Foo"}}]}}],
+        parse_find_pois("-spec f(foo()) -> any().", spec)
+    ),
+    ?assertMatch(
+        [#{id := {f, 1}, data := #{args := [#{name := {type, "Bar"}}]}}],
+        parse_find_pois("-spec f(foo:bar()) -> any().", spec)
+    ),
+    ?assertMatch(
+        [#{id := {f, 1}, data := #{args := [#{name := {type, "Bars"}}]}}],
+        parse_find_pois("-spec f([foo:bar()]) -> any().", spec)
+    ),
+    ?assertMatch(
+        [#{id := {f, 1}, data := #{args := [#{name := {type, "Foo"}}]}}],
+        parse_find_pois("-spec f(#foo{}) -> any().", spec)
+    ),
+    ?assertMatch(
+        [#{id := {f, 1}, data := #{args := [#{name := {type, "Foos"}}]}}],
+        parse_find_pois("-spec f([#foo{}]) -> any().", spec)
+    ),
+    ok.
+
 %%==============================================================================
 %% Helper functions
 %%==============================================================================
--spec parse_find_pois(string(), els_poi:poi_kind()) -> [els_poi:poi()].
+-spec parse_find_pois(string() | binary(), els_poi:poi_kind()) ->
+    [els_poi:poi()].
+parse_find_pois(Text, Kind) when is_list(Text) ->
+    parse_find_pois(unicode:characters_to_binary(Text), Kind);
 parse_find_pois(Text, Kind) ->
     {ok, POIs} = els_parser:parse(Text),
     SortedPOIs = els_poi:sort(POIs),

@@ -11,7 +11,7 @@
     ensure_deeply_indexed/1,
     shallow_index/2,
     shallow_index/3,
-    deep_index/1,
+    deep_index/2,
     remove/1
 ]).
 
@@ -76,13 +76,13 @@ ensure_deeply_indexed(Uri) ->
     {ok, #{pois := POIs} = Document} = els_utils:lookup_document(Uri),
     case POIs of
         ondemand ->
-            deep_index(Document);
+            deep_index(Document, _UpdateWords = true);
         _ ->
             Document
     end.
 
--spec deep_index(els_dt_document:item()) -> els_dt_document:item().
-deep_index(Document0) ->
+-spec deep_index(els_dt_document:item(), boolean()) -> els_dt_document:item().
+deep_index(Document0, UpdateWords) ->
     #{
         id := Id,
         uri := Uri,
@@ -91,8 +91,14 @@ deep_index(Document0) ->
         version := Version
     } = Document0,
     {ok, POIs} = els_parser:parse(Text),
-    Words = els_dt_document:get_words(Text),
-    Document = Document0#{pois => POIs, words => Words},
+    Document =
+        case UpdateWords of
+            true ->
+                Words = els_dt_document:get_words(Text),
+                Document0#{pois => POIs, words => Words};
+            false ->
+                Document0#{pois => POIs}
+        end,
     case els_dt_document:versioned_insert(Document) of
         ok ->
             index_signatures(Id, Uri, Text, POIs, Version),
@@ -117,13 +123,14 @@ index_signatures(Id, Uri, Text, POIs, Version) ->
 -spec index_signature(atom(), binary(), els_poi:poi(), version()) -> ok.
 index_signature(_M, _Text, #{id := undefined}, _Version) ->
     ok;
-index_signature(M, Text, #{id := {F, A}, range := Range}, Version) ->
+index_signature(M, Text, #{id := {F, A}, range := Range, data := #{args := Args}}, Version) ->
     #{from := From, to := To} = Range,
     Spec = els_text:range(Text, From, To),
     els_dt_signatures:versioned_insert(#{
         mfa => {M, F, A},
         spec => Spec,
-        version => Version
+        version => Version,
+        args => Args
     }).
 
 -spec index_references(atom(), uri(), [els_poi:poi()], version()) -> ok.

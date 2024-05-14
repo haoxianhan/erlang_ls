@@ -21,7 +21,13 @@
     create_undefined_function/1,
     create_undefined_function_arity/1,
     create_undefined_function_variable_names/1,
-    fix_callbacks/1
+    fix_callbacks/1,
+    extract_function/1,
+    add_include_file_macro/1,
+    define_macro/1,
+    define_macro_with_args/1,
+    suggest_macro/1,
+    undefined_record/1
 ]).
 
 %%==============================================================================
@@ -166,25 +172,23 @@ suggest_variable(Config) ->
     },
     #{result := Result} = els_client:document_codeaction(Uri, Range, [Diag]),
     Expected =
-        [
-            #{
-                edit => #{
-                    changes =>
-                        #{
-                            binary_to_atom(Uri, utf8) =>
-                                [
-                                    #{
-                                        range => Range,
-                                        newText => <<"Bar">>
-                                    }
-                                ]
-                        }
-                },
-                kind => <<"quickfix">>,
-                title => <<"Did you mean 'Bar'?">>
-            }
-        ],
-    ?assertEqual(Expected, Result),
+        #{
+            edit => #{
+                changes =>
+                    #{
+                        binary_to_atom(Uri, utf8) =>
+                            [
+                                #{
+                                    range => Range,
+                                    newText => <<"Bar">>
+                                }
+                            ]
+                    }
+            },
+            kind => <<"quickfix">>,
+            title => <<"Did you mean 'Bar'?">>
+        },
+    ?assert(lists:member(Expected, Result)),
     ok.
 
 -spec fix_module_name(config()) -> ok.
@@ -325,30 +329,28 @@ create_undefined_function(Config) ->
     },
     #{result := Result} = els_client:document_codeaction(Uri, Range, [Diag]),
     Expected =
-        [
-            #{
-                edit => #{
-                    changes =>
-                        #{
-                            binary_to_atom(Uri, utf8) =>
-                                [
-                                    #{
-                                        range =>
-                                            els_protocol:range(#{
-                                                from => {28, 1},
-                                                to => {28, 1}
-                                            }),
-                                        newText =>
-                                            <<"foobar() ->\n  ok.\n\n">>
-                                    }
-                                ]
-                        }
-                },
-                kind => <<"quickfix">>,
-                title => <<"Create function foobar/0">>
-            }
-        ],
-    ?assertEqual(Expected, Result),
+        #{
+            edit => #{
+                changes =>
+                    #{
+                        binary_to_atom(Uri, utf8) =>
+                            [
+                                #{
+                                    range =>
+                                        els_protocol:range(#{
+                                            from => {28, 1},
+                                            to => {28, 1}
+                                        }),
+                                    newText =>
+                                        <<"foobar() ->\n  ok.\n\n">>
+                                }
+                            ]
+                    }
+            },
+            kind => <<"quickfix">>,
+            title => <<"Create function foobar/0">>
+        },
+    ?assert(lists:member(Expected, Result)),
     ok.
 
 -spec create_undefined_function_arity((config())) -> ok.
@@ -366,30 +368,28 @@ create_undefined_function_arity(Config) ->
     },
     #{result := Result} = els_client:document_codeaction(Uri, Range, [Diag]),
     Expected =
-        [
-            #{
-                edit => #{
-                    changes =>
-                        #{
-                            binary_to_atom(Uri, utf8) =>
-                                [
-                                    #{
-                                        range =>
-                                            els_protocol:range(#{
-                                                from => {28, 1},
-                                                to => {28, 1}
-                                            }),
-                                        newText =>
-                                            <<"foobar(Arg1, Arg2, Arg3) ->\n  ok.\n\n">>
-                                    }
-                                ]
-                        }
-                },
-                kind => <<"quickfix">>,
-                title => <<"Create function foobar/3">>
-            }
-        ],
-    ?assertEqual(Expected, Result),
+        #{
+            edit => #{
+                changes =>
+                    #{
+                        binary_to_atom(Uri, utf8) =>
+                            [
+                                #{
+                                    range =>
+                                        els_protocol:range(#{
+                                            from => {28, 1},
+                                            to => {28, 1}
+                                        }),
+                                    newText =>
+                                        <<"foobar(Arg1, Arg2, Arg3) ->\n  ok.\n\n">>
+                                }
+                            ]
+                    }
+            },
+            kind => <<"quickfix">>,
+            title => <<"Create function foobar/3">>
+        },
+    ?assert(lists:member(Expected, Result)),
     ok.
 
 -spec create_undefined_function_variable_names((config())) -> ok.
@@ -407,30 +407,28 @@ create_undefined_function_variable_names(Config) ->
     },
     #{result := Result} = els_client:document_codeaction(Uri, Range, [Diag]),
     Expected =
-        [
-            #{
-                edit => #{
-                    changes =>
-                        #{
-                            binary_to_atom(Uri, utf8) =>
-                                [
-                                    #{
-                                        range =>
-                                            els_protocol:range(#{
-                                                from => {28, 1},
-                                                to => {28, 1}
-                                            }),
-                                        newText =>
-                                            <<"foobar(Foo, FooBar, Bar, FooBar) ->\n  ok.\n\n">>
-                                    }
-                                ]
-                        }
-                },
-                kind => <<"quickfix">>,
-                title => <<"Create function foobar/5">>
-            }
-        ],
-    ?assertEqual(Expected, Result),
+        #{
+            edit => #{
+                changes =>
+                    #{
+                        binary_to_atom(Uri, utf8) =>
+                            [
+                                #{
+                                    range =>
+                                        els_protocol:range(#{
+                                            from => {28, 1},
+                                            to => {28, 1}
+                                        }),
+                                    newText =>
+                                        <<"foobar(Foo, FooBar, Bar, FooBar) ->\n  ok.\n\n">>
+                                }
+                            ]
+                    }
+            },
+            kind => <<"quickfix">>,
+            title => <<"Create function foobar/5">>
+        },
+    ?assert(lists:member(Expected, Result)),
     ok.
 
 -spec fix_callbacks(config()) -> ok.
@@ -467,4 +465,274 @@ fix_callbacks(Config) ->
         ],
         Result
     ),
+    ok.
+
+-spec extract_function(config()) -> ok.
+extract_function(Config) ->
+    Uri = ?config(extract_function_uri, Config),
+    %% These shouldn't return any code actions
+    #{result := []} = els_client:document_codeaction(
+        Uri,
+        els_protocol:range(#{from => {2, 1}, to => {2, 5}}),
+        []
+    ),
+    #{result := []} = els_client:document_codeaction(
+        Uri,
+        els_protocol:range(#{from => {3, 1}, to => {3, 5}}),
+        []
+    ),
+    #{result := []} = els_client:document_codeaction(
+        Uri,
+        els_protocol:range(#{from => {4, 1}, to => {4, 5}}),
+        []
+    ),
+    #{result := []} = els_client:document_codeaction(
+        Uri,
+        els_protocol:range(#{from => {5, 8}, to => {5, 9}}),
+        []
+    ),
+    %% This should return a code action
+    #{
+        result := [
+            #{
+                command := #{
+                    title := <<"Extract function">>,
+                    arguments := [#{uri := Uri}]
+                },
+                kind := <<"refactor.extract">>,
+                title := <<"Extract function">>
+            }
+        ]
+    } = els_client:document_codeaction(
+        Uri,
+        els_protocol:range(#{from => {5, 8}, to => {5, 17}}),
+        []
+    ),
+    ok.
+
+-spec add_include_file_macro(config()) -> ok.
+add_include_file_macro(Config) ->
+    Uri = ?config(code_action_uri, Config),
+    %% Don't care
+    Range = els_protocol:range(#{
+        from => {?COMMENTS_LINES + 17, 9},
+        to => {?COMMENTS_LINES + 17, 15}
+    }),
+    DestRange = els_protocol:range(#{
+        from => {4, 1},
+        to => {4, 1}
+    }),
+    Diag = #{
+        message => <<"undefined macro 'INCLUDED_MACRO_A'">>,
+        range => Range,
+        severity => 2,
+        source => <<"Compiler">>
+    },
+    #{result := Result} =
+        els_client:document_codeaction(Uri, Range, [Diag]),
+    Path = <<"code_navigation/include/code_navigation.hrl">>,
+    Changes =
+        #{
+            binary_to_atom(Uri, utf8) =>
+                [
+                    #{
+                        range => DestRange,
+                        newText => <<"-include_lib(\"", Path/binary, "\").\n">>
+                    }
+                ]
+        },
+    Expected =
+        #{
+            edit => #{changes => Changes},
+            kind => <<"quickfix">>,
+            title => <<"Add -include_lib(\"", Path/binary, "\")">>
+        },
+    ?assert(lists:member(Expected, Result)),
+    ok.
+
+-spec define_macro(config()) -> ok.
+define_macro(Config) ->
+    Uri = ?config(code_action_uri, Config),
+    %% Don't care
+    Range = els_protocol:range(#{
+        from => {?COMMENTS_LINES + 17, 9},
+        to => {?COMMENTS_LINES + 17, 15}
+    }),
+    DestRange = els_protocol:range(#{
+        from => {4, 1},
+        to => {4, 1}
+    }),
+    Diag = #{
+        message => <<"undefined macro 'MAGIC_MACRO'">>,
+        range => Range,
+        severity => 2,
+        source => <<"Compiler">>
+    },
+    #{result := Result} =
+        els_client:document_codeaction(Uri, Range, [Diag]),
+    Changes =
+        #{
+            binary_to_atom(Uri, utf8) =>
+                [
+                    #{
+                        range => DestRange,
+                        newText => <<"-define(MAGIC_MACRO, undefined).\n">>
+                    }
+                ]
+        },
+    Expected = [
+        #{
+            edit => #{changes => Changes},
+            kind => <<"quickfix">>,
+            title => <<"Define MAGIC_MACRO">>
+        }
+    ],
+    ?assertEqual(Expected, Result),
+    ok.
+
+-spec suggest_macro(config()) -> ok.
+suggest_macro(Config) ->
+    Uri = ?config(code_action_uri, Config),
+    %% Don't care
+    Range = els_protocol:range(#{
+        from => {?COMMENTS_LINES + 17, 9},
+        to => {?COMMENTS_LINES + 17, 15}
+    }),
+    Diag = #{
+        message => <<"undefined macro 'assertEql/2'">>,
+        range => Range,
+        severity => 2,
+        source => <<"Compiler">>
+    },
+    #{result := Result} =
+        els_client:document_codeaction(Uri, Range, [Diag]),
+    Changes =
+        #{
+            binary_to_atom(Uri, utf8) =>
+                [
+                    #{
+                        range => Range,
+                        newText => <<"?assertEqual">>
+                    }
+                ]
+        },
+    Expected =
+        #{
+            edit => #{changes => Changes},
+            kind => <<"quickfix">>,
+            title => <<"Did you mean 'assertEqual'?">>
+        },
+    ?assert(lists:member(Expected, Result)),
+    ok.
+
+-spec define_macro_with_args(config()) -> ok.
+define_macro_with_args(Config) ->
+    Uri = ?config(code_action_uri, Config),
+    %% Don't care
+    Range = els_protocol:range(#{
+        from => {?COMMENTS_LINES + 17, 9},
+        to => {?COMMENTS_LINES + 17, 15}
+    }),
+    DestRange = els_protocol:range(#{
+        from => {4, 1},
+        to => {4, 1}
+    }),
+    Diag = #{
+        message => <<"undefined macro 'MAGIC_MACRO/2'">>,
+        range => Range,
+        severity => 2,
+        source => <<"Compiler">>
+    },
+    #{result := Result} =
+        els_client:document_codeaction(Uri, Range, [Diag]),
+    Changes =
+        #{
+            binary_to_atom(Uri, utf8) =>
+                [
+                    #{
+                        range => DestRange,
+                        newText => <<"-define(MAGIC_MACRO(_, _), undefined).\n">>
+                    }
+                ]
+        },
+    Expected = [
+        #{
+            edit => #{changes => Changes},
+            kind => <<"quickfix">>,
+            title => <<"Define MAGIC_MACRO/2">>
+        }
+    ],
+    ?assertEqual(Expected, Result),
+    ok.
+
+-spec undefined_record(config()) -> ok.
+undefined_record(Config) ->
+    Uri = ?config(code_action_uri, Config),
+    %% Don't care
+    Range = els_protocol:range(#{
+        from => {?COMMENTS_LINES + 17, 9},
+        to => {?COMMENTS_LINES + 17, 15}
+    }),
+    DestRange = els_protocol:range(#{
+        from => {4, 1},
+        to => {4, 1}
+    }),
+    Diag = #{
+        message => <<"record included_record_a undefined">>,
+        range => Range,
+        severity => 2,
+        source => <<"Compiler">>
+    },
+    #{result := Result} =
+        els_client:document_codeaction(Uri, Range, [Diag]),
+    Path1 = <<"code_navigation/include/code_navigation.hrl">>,
+    Path2 = <<"code_navigation/include/hover_record.hrl">>,
+    Changes1 =
+        #{
+            binary_to_atom(Uri, utf8) =>
+                [
+                    #{
+                        range => DestRange,
+                        newText => <<"-include_lib(\"", Path1/binary, "\").\n">>
+                    }
+                ]
+        },
+    Changes2 =
+        #{
+            binary_to_atom(Uri, utf8) =>
+                [
+                    #{
+                        range => DestRange,
+                        newText => <<"-include_lib(\"", Path2/binary, "\").\n">>
+                    }
+                ]
+        },
+    Changes3 =
+        #{
+            binary_to_atom(Uri, utf8) =>
+                [
+                    #{
+                        range => DestRange,
+                        newText => <<"-record(included_record_a, {}).\n">>
+                    }
+                ]
+        },
+    Expected = [
+        #{
+            edit => #{changes => Changes1},
+            kind => <<"quickfix">>,
+            title => <<"Add -include_lib(\"", Path1/binary, "\")">>
+        },
+        #{
+            edit => #{changes => Changes2},
+            kind => <<"quickfix">>,
+            title => <<"Add -include_lib(\"", Path2/binary, "\")">>
+        },
+        #{
+            edit => #{changes => Changes3},
+            kind => <<"quickfix">>,
+            title => <<"Define record included_record_a">>
+        }
+    ],
+    ?assertEqual(Expected, Result),
     ok.

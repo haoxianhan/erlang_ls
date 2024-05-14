@@ -7,7 +7,8 @@
 
 -export([
     handle_request/1,
-    trigger_characters/0
+    trigger_characters/0,
+    bif_pois/1
 ]).
 
 %% Exported to ease testing.
@@ -174,6 +175,14 @@ find_completions(
             {ItemFormat, TypeOrFun} =
                 completion_context(Document, Line, Column, Tokens),
             exported_definitions(Module, TypeOrFun, ItemFormat);
+        [{var, _, 'MODULE'}, {'?', _}, {'fun', _} | _] ->
+            Module = els_uri:module(els_dt_document:uri(Document)),
+            exported_definitions(Module, 'function', arity_only);
+        [{var, _, 'MODULE'}, {'?', _} | _] = Tokens ->
+            Module = els_uri:module(els_dt_document:uri(Document)),
+            {ItemFormat, TypeOrFun} =
+                completion_context(Document, Line, Column, Tokens),
+            exported_definitions(Module, TypeOrFun, ItemFormat);
         _ ->
             []
     end;
@@ -222,13 +231,13 @@ find_completions(
     ?COMPLETION_TRIGGER_KIND_CHARACTER,
     #{trigger := <<"\"">>}
 ) ->
-    [item_kind_file(Path) || Path <- paths_include_lib()];
+    [item_kind_file(Path) || Path <- els_include_paths:include_libs()];
 find_completions(
     <<"-include(">>,
     ?COMPLETION_TRIGGER_KIND_CHARACTER,
     #{trigger := <<"\"">>, document := Document}
 ) ->
-    [item_kind_file(Path) || Path <- paths_include(Document)];
+    [item_kind_file(Path) || Path <- els_include_paths:includes(Document)];
 find_completions(
     Prefix,
     ?COMPLETION_TRIGGER_KIND_CHARACTER,
@@ -485,89 +494,6 @@ attribute_module(#{id := Id}) ->
 %%=============================================================================
 %% Include paths
 %%=============================================================================
--spec paths_include(els_dt_document:item()) -> [binary()].
-paths_include(#{uri := Uri}) ->
-    case match_in_path(els_uri:path(Uri), els_config:get(apps_paths)) of
-        [] ->
-            [];
-        [Path | _] ->
-            AppPath = filename:join(lists:droplast(filename:split(Path))),
-            {ok, Headers} = els_dt_document_index:find_by_kind(header),
-            lists:flatmap(
-                fun(#{uri := HeaderUri}) ->
-                    case string:prefix(els_uri:path(HeaderUri), AppPath) of
-                        nomatch ->
-                            [];
-                        IncludePath ->
-                            [relative_include_path(IncludePath)]
-                    end
-                end,
-                Headers
-            )
-    end.
-
--spec paths_include_lib() -> [binary()].
-paths_include_lib() ->
-    Paths =
-        els_config:get(otp_paths) ++
-            els_config:get(deps_paths) ++
-            els_config:get(apps_paths) ++
-            els_config:get(include_paths),
-    {ok, Headers} = els_dt_document_index:find_by_kind(header),
-    lists:flatmap(
-        fun(#{uri := Uri}) ->
-            HeaderPath = els_uri:path(Uri),
-            case match_in_path(HeaderPath, Paths) of
-                [] ->
-                    [];
-                [Path | _] ->
-                    <<"/", PathSuffix/binary>> = string:prefix(HeaderPath, Path),
-                    PathBin = unicode:characters_to_binary(Path),
-                    case lists:reverse(filename:split(PathBin)) of
-                        [<<"include">>, App | _] ->
-                            [
-                                filename:join([
-                                    strip_app_version(App),
-                                    <<"include">>,
-                                    PathSuffix
-                                ])
-                            ];
-                        _ ->
-                            []
-                    end
-            end
-        end,
-        Headers
-    ).
-
--spec match_in_path(binary(), [binary()]) -> [binary()].
-match_in_path(DocumentPath, Paths) ->
-    [P || P <- Paths, string:prefix(DocumentPath, P) =/= nomatch].
-
--spec relative_include_path(binary()) -> binary().
-relative_include_path(Path) ->
-    case filename:split(Path) of
-        [_App, <<"include">> | Rest] -> filename:join(Rest);
-        [_App, <<"src">> | Rest] -> filename:join(Rest);
-        [_App, SubDir | Rest] -> filename:join([<<"..">>, SubDir | Rest])
-    end.
-
--spec strip_app_version(binary()) -> binary().
-strip_app_version(App0) ->
-    %% Transform "foo-1.0" into "foo"
-    case string:lexemes(App0, "-") of
-        [] ->
-            App0;
-        [_] ->
-            App0;
-        Lexemes ->
-            Vsn = lists:last(Lexemes),
-            case re:run(Vsn, "^[0-9.]+$", [global, {capture, none}]) of
-                match -> list_to_binary(lists:join("-", lists:droplast(Lexemes)));
-                nomatch -> App0
-            end
-    end.
-
 -spec item_kind_file(binary()) -> item().
 item_kind_file(Path) ->
     #{
@@ -1012,13 +938,20 @@ keywords(_POIKind, _ItemFormat) ->
 %%==============================================================================
 
 -spec bifs(poi_kind_or_any(), item_format()) -> [map()].
-bifs(any, ItemFormat) ->
-    bifs(function, ItemFormat) ++
-        bifs(type_definition, ItemFormat);
-bifs(function, ItemFormat) ->
+bifs(type_definition, arity_only) ->
+    %% We don't want to include the built-in types when we are in
+    %% a -export_types(). context.
+    [];
+bifs(Kind, ItemFormat) ->
+    [completion_item(X, ItemFormat) || X <- bif_pois(Kind)].
+
+-spec bif_pois(poi_kind_or_any()) -> [map()].
+bif_pois(any) ->
+    bif_pois(function) ++ bif_pois(type_definition);
+bif_pois(function) ->
     Range = #{from => {0, 0}, to => {0, 0}},
     Exports = erlang:module_info(exports),
-    BIFs = [
+    [
         #{
             kind => function,
             id => X,
@@ -1026,13 +959,8 @@ bifs(function, ItemFormat) ->
             data => #{args => generate_arguments("Arg", A)}
         }
      || {F, A} = X <- Exports, erl_internal:bif(F, A)
-    ],
-    [completion_item(X, ItemFormat) || X <- BIFs];
-bifs(type_definition, arity_only) ->
-    %% We don't want to include the built-in types when we are in
-    %% a -export_types(). context.
-    [];
-bifs(type_definition, ItemFormat) ->
+    ];
+bif_pois(type_definition) ->
     Types = [
         {'any', 0},
         {'arity', 0},
@@ -1079,7 +1007,7 @@ bifs(type_definition, ItemFormat) ->
         {'timeout', 0}
     ],
     Range = #{from => {0, 0}, to => {0, 0}},
-    POIs = [
+    [
         #{
             kind => type_definition,
             id => X,
@@ -1087,9 +1015,8 @@ bifs(type_definition, ItemFormat) ->
             data => #{args => generate_arguments("Type", A)}
         }
      || {_, A} = X <- Types
-    ],
-    [completion_item(X, ItemFormat) || X <- POIs];
-bifs(define, ItemFormat) ->
+    ];
+bif_pois(define) ->
     Macros = [
         {'MODULE', none},
         {'MODULE_STRING', none},
@@ -1103,7 +1030,7 @@ bifs(define, ItemFormat) ->
         {{'FEATURE_ENABLED', 1}, [#{index => 1, name => "Feature"}]}
     ],
     Range = #{from => {0, 0}, to => {0, 0}},
-    POIs = [
+    [
         #{
             kind => define,
             id => Id,
@@ -1111,13 +1038,12 @@ bifs(define, ItemFormat) ->
             data => #{args => Args}
         }
      || {Id, Args} <- Macros
-    ],
-    [completion_item(X, ItemFormat) || X <- POIs].
+    ].
 
--spec generate_arguments(string(), integer()) -> els_parser:args().
+-spec generate_arguments(string(), integer()) -> els_arg:args().
 generate_arguments(Prefix, Arity) ->
     [
-        #{index => N, name => Prefix ++ integer_to_list(N)}
+        els_arg:new(N, Prefix ++ integer_to_list(N))
      || N <- lists:seq(1, Arity)
     ].
 
@@ -1209,29 +1135,13 @@ completion_item(#{kind := Kind = define, id := Name, data := Info}, Data, _, _Ur
         data => Data
     }.
 
--spec args(els_poi:poi(), uri()) -> els_parser:args().
+-spec args(els_poi:poi(), uri()) -> els_arg:args().
 args(#{kind := type_definition, data := POIData}, _Uri) ->
     maps:get(args, POIData);
 args(#{kind := _Kind, data := POIData}, _Uri = undefined) ->
     maps:get(args, POIData);
-args(#{kind := function, data := POIData, id := Id}, Uri) ->
-    %% Try to fetch args from -spec
-    {ok, [Document]} = els_dt_document:lookup(Uri),
-    POIs = els_dt_document:pois(Document, [spec]),
-    case [P || #{id := SpecId} = P <- POIs, SpecId == Id] of
-        [#{data := #{args := SpecArgs}} | _] when SpecArgs /= [] ->
-            merge_args(SpecArgs, maps:get(args, POIData));
-        _ ->
-            maps:get(args, POIData)
-    end.
-
--spec merge_args(els_parser:args(), els_parser:args()) -> els_parser:args().
-merge_args([], []) ->
-    [];
-merge_args([#{name := undefined} | T1], [Arg | T2]) ->
-    [Arg | merge_args(T1, T2)];
-merge_args([Arg | T1], [_ | T2]) ->
-    [Arg | merge_args(T1, T2)].
+args(#{kind := function} = POI, Uri) ->
+    els_arg:get_args(Uri, POI).
 
 -spec features() -> items().
 features() ->
@@ -1254,13 +1164,13 @@ macro_label({Name, Arity}) ->
 macro_label(Name) ->
     atom_to_binary(Name, utf8).
 
--spec format_function(atom(), els_parser:args(), boolean(), els_poi:poi_kind()) -> binary().
+-spec format_function(atom(), els_arg:args(), boolean(), els_poi:poi_kind()) -> binary().
 format_function(Name, Args, SnippetSupport, Kind) ->
     format_args(atom_to_label(Name), Args, SnippetSupport, Kind).
 
 -spec format_macro(
     atom() | {atom(), non_neg_integer()},
-    els_parser:args(),
+    els_arg:args(),
     boolean()
 ) -> binary().
 format_macro({Name0, _Arity}, Args, SnippetSupport) ->
@@ -1271,7 +1181,7 @@ format_macro(Name, none, _SnippetSupport) ->
 
 -spec format_args(
     binary(),
-    els_parser:args(),
+    els_arg:args(),
     boolean(),
     els_poi:poi_kind()
 ) -> binary().
@@ -1374,15 +1284,6 @@ atom_to_label(Atom) when is_atom(Atom) ->
 %%==============================================================================
 -ifdef(TEST).
 -include_lib("eunit/include/eunit.hrl").
-
-strip_app_version_test() ->
-    ?assertEqual(<<"foo">>, strip_app_version(<<"foo">>)),
-    ?assertEqual(<<"foo">>, strip_app_version(<<"foo-1.2.3">>)),
-    ?assertEqual(<<"">>, strip_app_version(<<"">>)),
-    ?assertEqual(<<"foo-bar">>, strip_app_version(<<"foo-bar">>)),
-    ?assertEqual(<<"foo-bar">>, strip_app_version(<<"foo-bar-1.2.3">>)),
-    ?assertEqual(<<"foo-bar-baz">>, strip_app_version(<<"foo-bar-baz">>)),
-    ?assertEqual(<<"foo-bar-baz">>, strip_app_version(<<"foo-bar-baz-1.2.3">>)).
 
 parse_record_test() ->
     ?assertEqual(

@@ -1,5 +1,6 @@
 -module(els_code_actions).
 -export([
+    extract_function/2,
     create_function/4,
     export_function/4,
     fix_module_name/4,
@@ -8,7 +9,12 @@
     remove_unused/4,
     suggest_variable/4,
     fix_atom_typo/4,
-    undefined_callback/4
+    undefined_callback/4,
+    define_macro/4,
+    define_record/4,
+    add_include_lib_macro/4,
+    add_include_lib_record/4,
+    suggest_macro/4
 ]).
 
 -include("els_lsp.hrl").
@@ -92,6 +98,135 @@ ignore_variable(Uri, Range, _Data, [UnusedVariable]) ->
             []
     end.
 
+-spec add_include_lib_macro(uri(), range(), binary(), [binary()]) -> [map()].
+add_include_lib_macro(Uri, Range, _Data, [Macro0]) ->
+    {Name, Id} =
+        case string:split(Macro0, "/") of
+            [MacroBin] ->
+                Name0 = binary_to_atom(MacroBin, utf8),
+                {Name0, Name0};
+            [MacroBin, ArityBin] ->
+                Name0 = binary_to_atom(MacroBin, utf8),
+                Arity = binary_to_integer(ArityBin),
+                {Name0, {Name0, Arity}}
+        end,
+    add_include_file(Uri, Range, 'define', Name, Id).
+
+-spec define_macro(uri(), range(), binary(), [binary()]) -> [map()].
+define_macro(Uri, Range, _Data, [Macro0]) ->
+    {ok, Document} = els_utils:lookup_document(Uri),
+    NewText =
+        case string:split(Macro0, "/") of
+            [MacroBin] ->
+                <<"-define(", MacroBin/binary, ", undefined).\n">>;
+            [MacroBin, ArityBin] ->
+                Arity = binary_to_integer(ArityBin),
+                Args = string:join(lists:duplicate(Arity, "_"), ", "),
+                list_to_binary(
+                    ["-define(", MacroBin, "(", Args, "), undefined).\n"]
+                )
+        end,
+    #{from := Pos} = els_range:to_poi_range(Range),
+    BeforeRange = #{from => {1, 1}, to => Pos},
+    POIs = els_dt_document:pois_in_range(
+        Document,
+        [module, include, include_lib, define],
+        BeforeRange
+    ),
+    #{range := #{to := {Line, _}}} = lists:last(els_poi:sort(POIs)),
+    [
+        make_edit_action(
+            Uri,
+            <<"Define ", Macro0/binary>>,
+            ?CODE_ACTION_KIND_QUICKFIX,
+            NewText,
+            els_protocol:range(#{
+                to => {Line + 1, 1},
+                from => {Line + 1, 1}
+            })
+        )
+    ].
+
+-spec define_record(uri(), range(), binary(), [binary()]) -> [map()].
+define_record(Uri, Range, _Data, [Record]) ->
+    {ok, Document} = els_utils:lookup_document(Uri),
+    NewText = <<"-record(", Record/binary, ", {}).\n">>,
+    #{from := Pos} = els_range:to_poi_range(Range),
+    BeforeRange = #{from => {1, 1}, to => Pos},
+    POIs = els_dt_document:pois_in_range(
+        Document,
+        [module, include, include_lib, record],
+        BeforeRange
+    ),
+    Line = end_line(lists:last(els_poi:sort(POIs))),
+    [
+        make_edit_action(
+            Uri,
+            <<"Define record ", Record/binary>>,
+            ?CODE_ACTION_KIND_QUICKFIX,
+            NewText,
+            els_protocol:range(#{
+                to => {Line + 1, 1},
+                from => {Line + 1, 1}
+            })
+        )
+    ].
+
+-spec end_line(els_poi:poi()) -> non_neg_integer().
+end_line(#{data := #{value_range := #{to := {Line, _}}}}) ->
+    Line;
+end_line(#{range := #{to := {Line, _}}}) ->
+    Line.
+
+-spec add_include_lib_record(uri(), range(), _, [binary()]) -> [map()].
+add_include_lib_record(Uri, Range, _Data, [Record]) ->
+    Name = binary_to_atom(Record, utf8),
+    add_include_file(Uri, Range, 'record', Name, Name).
+
+-spec add_include_file(uri(), range(), els_poi:poi_kind(), atom(), els_poi:poi_id()) -> [map()].
+add_include_file(Uri, Range, Kind, Name, Id) ->
+    %% TODO: Add support for -include() also
+    %% TODO: Doesn't work for OTP headers
+    CandidateUris =
+        els_dt_document:find_candidates(Name, 'header'),
+    Uris = [
+        CandidateUri
+     || CandidateUri <- CandidateUris,
+        contains_poi(Kind, CandidateUri, Id)
+    ],
+    Paths = els_include_paths:include_libs(Uris),
+    {ok, Document} = els_utils:lookup_document(Uri),
+    #{from := Pos} = els_range:to_poi_range(Range),
+    BeforeRange = #{from => {1, 1}, to => Pos},
+    case
+        els_dt_document:pois_in_range(
+            Document,
+            [module, include, include_lib],
+            BeforeRange
+        )
+    of
+        [] ->
+            [];
+        POIs ->
+            #{range := #{to := {Line, _}}} = lists:last(els_poi:sort(POIs)),
+            [
+                make_edit_action(
+                    Uri,
+                    <<"Add -include_lib(\"", Path/binary, "\")">>,
+                    ?CODE_ACTION_KIND_QUICKFIX,
+                    <<"-include_lib(\"", Path/binary, "\").\n">>,
+                    els_protocol:range(#{to => {Line + 1, 1}, from => {Line + 1, 1}})
+                )
+             || Path <- Paths
+            ]
+    end.
+
+-spec contains_poi(els_poi:poi_kind(), uri(), atom()) -> boolean().
+contains_poi(Kind, Uri, Macro) ->
+    {ok, Document} = els_utils:lookup_document(Uri),
+    POIs = els_dt_document:pois(Document, [Kind]),
+    lists:any(fun(#{id := Id}) -> Id =:= Macro end, POIs).
+
 -spec suggest_variable(uri(), range(), binary(), [binary()]) -> [map()].
 suggest_variable(Uri, Range, _Data, [Var]) ->
     %% Supply a quickfix to replace an unbound variable with the most similar
@@ -123,6 +258,41 @@ suggest_variable(Uri, Range, _Data, [Var]) ->
         error ->
             []
     end.
+
+-spec suggest_macro(uri(), range(), binary(), [binary()]) -> [map()].
+suggest_macro(Uri, Range, _Data, [Macro]) ->
+    %% Supply a quickfix to replace an unbound variable with the most similar
+    %% variable name in scope.
+    {ok, Document} = els_utils:lookup_document(Uri),
+    POIs =
+        els_scope:local_and_included_pois(Document, [define]) ++
+            els_completion_provider:bif_pois(define),
+    {Name, MacrosInScope} =
+        case string:split(Macro, "/") of
+            [Name0] ->
+                {Name0, [atom_to_binary(Id) || #{id := Id} <- POIs, is_atom(Id)]};
+            [Name0, ArityBin] ->
+                Arity = binary_to_integer(ArityBin),
+                {Name0, [
+                    atom_to_binary(Id)
+                 || #{id := {Id, A}} <- POIs,
+                    is_atom(Id),
+                    A =:= Arity
+                ]}
+        end,
+    Distances =
+        [{els_utils:jaro_distance(M, Name), M} || M <- MacrosInScope, M =/= Macro],
+    [
+        make_edit_action(
+            Uri,
+            <<"Did you mean '", M/binary, "'?">>,
+            ?CODE_ACTION_KIND_QUICKFIX,
+            <<"?", M/binary>>,
+            Range
+        )
+     || {Distance, M} <- lists:reverse(lists:usort(Distances)),
+        Distance > 0.8
+    ].
 
 -spec fix_module_name(uri(), range(), binary(), [binary()]) -> [map()].
 fix_module_name(Uri, Range0, _Data, [ModName, FileName]) ->
@@ -196,6 +366,59 @@ fix_atom_typo(Uri, Range, _Data, [Atom]) ->
             Range
         )
     ].
+
+-spec extract_function(uri(), range()) -> [map()].
+extract_function(Uri, Range) ->
+    {ok, [Document]} = els_dt_document:lookup(Uri),
+    #{from := From = {Line, Column}, to := To} = els_range:to_poi_range(Range),
+    %% We only want to extract if selection is large enough
+    %% and cursor is inside a function
+    case
+        large_enough_range(From, To) andalso
+            not contains_function_clause(Document, Line) andalso
+            els_dt_document:wrapping_functions(Document, Line, Column) /= []
+    of
+        true ->
+            [
+                #{
+                    title => <<"Extract function">>,
+                    kind => <<"refactor.extract">>,
+                    command => make_extract_function_command(Range, Uri)
+                }
+            ];
+        false ->
+            []
+    end.
+
+-spec make_extract_function_command(range(), uri()) -> map().
+make_extract_function_command(Range, Uri) ->
+    els_command:make_command(
+        <<"Extract function">>,
+        <<"refactor.extract">>,
+        [#{uri => Uri, range => Range}]
+    ).
+
+-spec contains_function_clause(
+    els_dt_document:item(),
+    non_neg_integer()
+) -> boolean().
+contains_function_clause(Document, Line) ->
+    POIs = els_dt_document:get_element_at_pos(Document, Line, 1),
+    lists:any(
+        fun
+            (#{kind := 'function_clause'}) ->
+                true;
+            (_) ->
+                false
+        end,
+        POIs
+    ).
+
+-spec large_enough_range(pos(), pos()) -> boolean().
+large_enough_range({Line, FromC}, {Line, ToC}) when (ToC - FromC) < 2 ->
+    false;
+large_enough_range(_From, _To) ->
+    true.
 
 -spec undefined_callback(uri(), range(), binary(), [binary()]) -> [map()].
 undefined_callback(Uri, _Range, _Data, [_Function, Behaviour]) ->
